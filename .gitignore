@@ -1,0 +1,21 @@
+build/
+results/*.db
+results/*.png
+results/*.csv
+__pycache__/
+*.exe
+*.o
+
+# CMake artifacts
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+
+# Python venv (Phase 4 plotting)
+venv/
+.venv/
+
+# abandoned pre-C++ prototype, kept locally only
+_old_python_attempt/
