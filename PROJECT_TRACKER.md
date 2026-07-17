@@ -19,7 +19,7 @@ numbers and charts.
 | 0 | Plan & scaffold; interfaces + stub main; **prove the toolchain compiles** | Opus, high | ✅ |
 | 1 | Core buffer pool + FIFO + LRU (index-linked intrusive list) | Sonnet, medium | ✅ |
 | 2 | CLOCK + SIEVE + hand-computed tests | Sonnet, high | ✅ |
-| 3 | S3-FIFO (small/main/ghost queues) + tests | Opus, medium | ⬜ |
+| 3 | S3-FIFO (small/main/ghost queues) + tests | Opus, medium | ✅ |
 | 4 | Trace generators + benchmark runner + `plot.py` | Sonnet, medium | ⬜ |
 | 5 | Sanity-check results vs. papers + polish + resume bullets | Opus, medium | ⬜ |
 | 6 | Teaching phase → `EXPLANATION.md` | Opus, high | ⬜ |
@@ -39,6 +39,9 @@ numbers and charts.
 | D9 | FIFO/LRU internal lists use `std::unordered_map<page_id_t,int>` from page_id to node index, with a `capacity_`-sized (not `num_pages_`-sized) node array | Matches the master prompt's spec exactly and mirrors how `BufferPool`'s own page table works: node storage is bounded by how many pages can actually be resident, not by the whole page-id space, which is the realistic constraint for a real cache. |
 | D10 | Hand-computed policy tests call `on_access`/`on_insert`/`evict()` directly on a bare policy via a small `simulate()` test helper, not through `BufferPool`/`DiskManager` | Isolates policy logic from disk I/O so the expected-eviction traces are exact and fast; `BufferPool`-level integration is covered separately by `bench/runner.cpp`. |
 | D11 | CLOCK's new inserts start with `ref_bit = true` (one free pass); SIEVE's new inserts start with `visited = false` (no free pass) | Intentional and matches the papers: CLOCK protects freshly-loaded pages like most second-chance implementations (e.g. Postgres); SIEVE's "quick demotion" specifically depends on giving new objects *no* special protection so a one-hit-wonder ages out fast. |
+| D12 | S3-FIFO sizes: `small = max(1, capacity/10)`, `main = capacity - small`, `ghost = max(1, main)`. Small and main share one `capacity_`-sized node array | The 10/90 split is the paper's. The `max(1, ...)` floor keeps small non-empty at the tiny cache sizes the unit tests use (capacity 3 ⇒ small=1, main=2). One shared node array is safe because small + main together are exactly the resident set, bounded by capacity. |
+| **D13** | **S3-FIFO promotes small→main at `freq >= 1` (`kPromoteThreshold = 1`), not `freq > 1`** | **The master prompt specifies "objects accessed ≥1 time move to main", so that is what is implemented. Note the paper's reference implementation (libCacheSim `S3FIFO.c`) uses `freq > 1` — i.e. it requires *two* accesses. This is the single most likely knob to explain any Phase 5 result that contradicts the paper; it is a named constant precisely so it can be flipped and re-benchmarked in one edit.** |
+| D14 | Pages promoted small→main have `freq` reset to 0 | Matches libCacheSim. The promoted page's protection comes from entering at main's *head* (it must survive a full main cycle before it is even considered), not from a carried-over counter — otherwise a page could bank up to 3 extra reinsertion rounds on top of the promotion. |
 
 ## Git / GitHub workflow (effective Phase 1 onward)
 
@@ -59,6 +62,39 @@ numbers and charts.
   `sparshagra <sparsh51@outlook.com>`; nothing in this repo's history should mention Claude,
   Anthropic, or any AI coding agent. Do not add Co-Authored-By trailers here.
 - Python venv for `plot.py` (Phase 4) lives at `venv/` in the repo root, gitignored.
+
+## Phase 3 — what exists now
+
+- `include/policies/s3fifo.h` — small + main share **one** `capacity_`-sized node array
+  (their combined size can never exceed capacity), distinguished only by which
+  head/tail index pair links them. Sizes: `small = max(1, capacity/10)`,
+  `main = capacity - small`, `ghost = max(1, main)` (D12).
+- Ghost is a **key-only** ring buffer + `unordered_set` for O(1) membership. No frames,
+  no page data — that's the whole point of it being cheap enough to size at ~main's
+  object count.
+- `evict()` picks small if `s_size_ >= s_capacity_`, else main, and falls back to the
+  other queue so a victim is always returned if any unpinned page exists. Both
+  `evict_small`/`evict_main` skip pinned pages by scanning tail→head.
+
+**Hand-computed test traces** (both derived by hand *before* coding; both matched on
+the first run — no debugging needed). Capacity 3 ⇒ small=1, main=2, ghost=2:
+
+- `1,1,2,2,3,3,4,2,5,5,6` → evictions `[1, 4, 3]`. Pages 1/2/3 each earn a second
+  access, so the eviction at request 7 promotes all three out of small; main
+  overflows and `evict_main` evicts page 1 (freq 0). Page 2's hit at request 8 gives
+  it freq 1, so at request 11 page 2 is **FIFO-reinserted** (freq 1→0, back to main's
+  head) and page 3 is evicted in its place.
+- `1,2,3,4,1,5,6,7` → evictions `[1, 2, 3, 4, 5]`. Page 1 dies in small as a one-hit
+  wonder (key → ghost), then the re-request at position 5 is a **ghost hit** → straight
+  to main. The following four requests churn small completely and page 1 is never
+  evicted again. This trace is deliberately built to be *discriminating*: a broken
+  ghost lookup would put page 1 back in small, where it would reach the tail and be
+  evicted a second time, giving `[1,2,3,4,1]`.
+- Pin invariants now run against all five policies.
+
+**Verified:** `.\build.ps1` compiles with zero warnings, reports `36 passed, 0 failed`.
+
+**All five policies are now implemented.** Phase 4 can benchmark them.
 
 ## Phase 2 — what exists now
 
