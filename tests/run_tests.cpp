@@ -11,6 +11,7 @@
 #include "policies/clock.h"
 #include "policies/fifo.h"
 #include "policies/lru.h"
+#include "policies/s3fifo.h"
 #include "policies/sieve.h"
 #include "policy.h"
 
@@ -164,6 +165,36 @@ void test_sieve_hand_computed() {
   CHECK_EQ(evictions, expected);
 }
 
+// Hand-computed, capacity 3 => small=1, main=2, ghost=2. Exercises the two
+// paths that only exist in main: pages 1,2,3 each earn a second access, so the
+// eviction at request 7 promotes all three out of small, overflowing main and
+// forcing evict_main (which evicts 1, freq 0). Later, page 2's hit at request 8
+// gives it freq 1, so when main overflows again at request 11 page 2 is
+// FIFO-reinserted (freq 1->0, back to main's head) and page 3 is evicted in its
+// place. See PROJECT_TRACKER.md Phase 3 for the full step-by-step state.
+void test_s3fifo_hand_computed() {
+  S3FIFOPolicy policy(3, 16);
+  std::vector<page_id_t> trace = {1, 1, 2, 2, 3, 3, 4, 2, 5, 5, 6};
+  auto evictions = simulate(policy, trace);
+  std::vector<page_id_t> expected = {1, 4, 3};
+  CHECK_EQ(evictions, expected);
+}
+
+// Hand-computed, capacity 3 => small=1, main=2, ghost=2. Page 1 is evicted from
+// small as a one-hit wonder at request 4 (its key lands in ghost), then
+// re-requested at request 5 -- the ghost hit sends it straight to main. The
+// four requests that follow churn small completely, and page 1 is never evicted
+// again, which is what proves the promotion took effect: if the ghost lookup
+// were broken and page 1 had re-entered small, it would reach small's tail and
+// be evicted a second time, giving {1,2,3,4,1} instead.
+void test_s3fifo_ghost_promotion() {
+  S3FIFOPolicy policy(3, 16);
+  std::vector<page_id_t> trace = {1, 2, 3, 4, 1, 5, 6, 7};
+  auto evictions = simulate(policy, trace);
+  std::vector<page_id_t> expected = {1, 2, 3, 4, 5};
+  CHECK_EQ(evictions, expected);
+}
+
 // Invariant: a pinned page is never returned by evict(), even when it sits at
 // the natural eviction end of the list.
 void test_pin_invariant(EvictionPolicy& policy, const char* label) {
@@ -201,6 +232,8 @@ int main() {
   test_lru_hand_computed();
   test_clock_hand_computed();
   test_sieve_hand_computed();
+  test_s3fifo_hand_computed();
+  test_s3fifo_ghost_promotion();
 
   {
     FIFOPolicy p(3, 64);
@@ -219,6 +252,10 @@ int main() {
     test_pin_invariant(p, "SIEVE");
   }
   {
+    S3FIFOPolicy p(3, 64);
+    test_pin_invariant(p, "S3-FIFO");
+  }
+  {
     FIFOPolicy p(2, 64);
     test_all_pinned_invariant(p, "FIFO");
   }
@@ -233,6 +270,10 @@ int main() {
   {
     SievePolicy p(2, 64);
     test_all_pinned_invariant(p, "SIEVE");
+  }
+  {
+    S3FIFOPolicy p(2, 64);
+    test_all_pinned_invariant(p, "S3-FIFO");
   }
 
   std::printf("%d passed, %d failed\n", g_pass, g_fail);
