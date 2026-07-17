@@ -1,11 +1,15 @@
 // Self-contained test runner: no GoogleTest, no Catch2, just a CHECK macro and
-// a pass/fail count. Phases 1-3 add per-policy hand-computed eviction tests.
+// a pass/fail count. Phases 2-3 add CLOCK/SIEVE/S3-FIFO tests the same way.
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <unordered_set>
+#include <vector>
 
 #include "buffer_pool.h"
 #include "disk_manager.h"
+#include "policies/fifo.h"
+#include "policies/lru.h"
 #include "policy.h"
 
 static int g_pass = 0;
@@ -35,15 +39,6 @@ static int g_fail = 0;
 
 namespace {
 
-class NoopPolicy : public EvictionPolicy {
- public:
-  NoopPolicy(size_t capacity, size_t num_pages) : EvictionPolicy(capacity, num_pages) {}
-  void on_access(page_id_t) override {}
-  void on_insert(page_id_t) override {}
-  page_id_t evict() override { return INVALID_PAGE; }
-  const char* name() const override { return "noop"; }
-};
-
 void test_stats() {
   Stats s;
   CHECK_EQ(s.miss_ratio(), 0.0);  // no ops => defined as 0, not NaN
@@ -53,7 +48,7 @@ void test_stats() {
 }
 
 void test_pinning_base() {
-  NoopPolicy p(4, 16);
+  FIFOPolicy p(4, 16);
   EvictionPolicy* base = &p;
   CHECK(!base->is_pinned(5));
   base->set_pinned(5, true);
@@ -61,7 +56,7 @@ void test_pinning_base() {
   base->set_pinned(5, false);
   CHECK(!base->is_pinned(5));
   CHECK_EQ(base->capacity(), size_t{4});
-  CHECK_EQ(std::string(base->name()), std::string("noop"));
+  CHECK_EQ(std::string(base->name()), std::string("FIFO"));
 }
 
 void test_disk_roundtrip() {
@@ -88,11 +83,80 @@ void test_disk_roundtrip() {
 
 void test_pool_construction() {
   DiskManager disk("results/test.db", 8);
-  NoopPolicy policy(4, 8);
+  FIFOPolicy policy(4, 8);
   BufferPool pool(&disk, &policy, 4);
   CHECK_EQ(pool.num_frames(), size_t{4});
   CHECK(!pool.is_resident(0));
   CHECK_EQ(pool.stats().hits, size_t{0});
+}
+
+// Drives a bare policy (no BufferPool/disk involved) through a trace, mirroring
+// exactly the protocol BufferPool uses: hit -> on_access, miss when full ->
+// evict() then on_insert, miss with room -> on_insert only. Returns the
+// sequence of evicted page_ids, in order.
+std::vector<page_id_t> simulate(EvictionPolicy& policy, const std::vector<page_id_t>& trace) {
+  std::unordered_set<page_id_t> resident;
+  std::vector<page_id_t> evictions;
+  for (page_id_t pid : trace) {
+    if (resident.count(pid)) {
+      policy.on_access(pid);
+      continue;
+    }
+    if (resident.size() >= policy.capacity()) {
+      page_id_t victim = policy.evict();
+      resident.erase(victim);
+      evictions.push_back(victim);
+    }
+    policy.on_insert(pid);
+    resident.insert(pid);
+  }
+  return evictions;
+}
+
+// Hand-computed on paper: FIFO never reorders on a hit, so eviction order is
+// purely insertion order regardless of the two hits at positions 8 and 9.
+void test_fifo_hand_computed() {
+  FIFOPolicy policy(3, 16);
+  std::vector<page_id_t> trace = {1, 2, 3, 4, 1, 2, 5, 1, 2, 6};
+  auto evictions = simulate(policy, trace);
+  std::vector<page_id_t> expected = {1, 2, 3, 4, 1};
+  CHECK_EQ(evictions, expected);
+}
+
+// Hand-computed on paper: the hit on page 1 at position 4 promotes it, so it
+// survives one extra eviction round compared to plain FIFO on a similar trace.
+void test_lru_hand_computed() {
+  LRUPolicy policy(3, 16);
+  std::vector<page_id_t> trace = {1, 2, 3, 1, 4, 2, 5, 3, 1, 2};
+  auto evictions = simulate(policy, trace);
+  std::vector<page_id_t> expected = {2, 3, 1, 4, 2, 5};
+  CHECK_EQ(evictions, expected);
+}
+
+// Invariant: a pinned page is never returned by evict(), even when it sits at
+// the natural eviction end of the list.
+void test_pin_invariant(EvictionPolicy& policy, const char* label) {
+  policy.on_insert(10);
+  policy.on_insert(20);
+  policy.on_insert(30);  // fills capacity 3, insertion order: 10, 20, 30
+  policy.set_pinned(10, true);
+
+  page_id_t victim = policy.evict();
+  CHECK(victim != 10);
+  CHECK_EQ(victim, page_id_t{20});  // 10 is pinned, so 20 is next in line
+
+  std::printf("  (pin invariant OK for %s)\n", label);
+}
+
+// Invariant: if every resident page is pinned, evict() must report failure
+// (INVALID_PAGE) rather than evicting a pinned page or a phantom one.
+void test_all_pinned_invariant(EvictionPolicy& policy, const char* label) {
+  policy.on_insert(1);
+  policy.on_insert(2);
+  policy.set_pinned(1, true);
+  policy.set_pinned(2, true);
+  CHECK_EQ(policy.evict(), INVALID_PAGE);
+  std::printf("  (all-pinned invariant OK for %s)\n", label);
 }
 
 }  // namespace
@@ -102,6 +166,25 @@ int main() {
   test_pinning_base();
   test_disk_roundtrip();
   test_pool_construction();
+  test_fifo_hand_computed();
+  test_lru_hand_computed();
+
+  {
+    FIFOPolicy p(3, 64);
+    test_pin_invariant(p, "FIFO");
+  }
+  {
+    LRUPolicy p(3, 64);
+    test_pin_invariant(p, "LRU");
+  }
+  {
+    FIFOPolicy p(2, 64);
+    test_all_pinned_invariant(p, "FIFO");
+  }
+  {
+    LRUPolicy p(2, 64);
+    test_all_pinned_invariant(p, "LRU");
+  }
 
   std::printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
