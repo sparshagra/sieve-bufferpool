@@ -8,8 +8,10 @@
 
 #include "buffer_pool.h"
 #include "disk_manager.h"
+#include "policies/clock.h"
 #include "policies/fifo.h"
 #include "policies/lru.h"
+#include "policies/sieve.h"
 #include "policy.h"
 
 static int g_pass = 0;
@@ -133,6 +135,35 @@ void test_lru_hand_computed() {
   CHECK_EQ(evictions, expected);
 }
 
+// Hand-computed on paper: pages 1,2,3 fill the 3 slots with ref_bit=true (set
+// on insert). Requesting page 4 forces a full sweep that clears all three
+// bits without evicting anything, then a second pass evicts page 1 (the
+// first slot revisited). Page 2's later hit refreshes its bit before the next
+// eviction, so page 3 -- never touched again -- is evicted instead of it.
+void test_clock_hand_computed() {
+  ClockPolicy policy(3, 16);
+  std::vector<page_id_t> trace = {1, 2, 3, 4, 2, 5};
+  auto evictions = simulate(policy, trace);
+  std::vector<page_id_t> expected = {1, 3};
+  CHECK_EQ(evictions, expected);
+}
+
+// Hand-computed on paper (see PROJECT_TRACKER.md Phase 2 notes for the full
+// step-by-step derivation). Demonstrates lazy promotion (the two hits at
+// positions 4-5 never move pages 1/2 in the list, only set their visited
+// bit), the hand persisting mid-sweep across separate evict() calls (request
+// 8 evicts immediately using the hand position left over from request 7,
+// with no extra skipping), and quick demotion (page 4, inserted unprotected
+// at request 6, is evicted three requests later at request 11 having never
+// been re-accessed).
+void test_sieve_hand_computed() {
+  SievePolicy policy(3, 16);
+  std::vector<page_id_t> trace = {1, 2, 3, 1, 2, 4, 5, 6, 5, 6, 7};
+  auto evictions = simulate(policy, trace);
+  std::vector<page_id_t> expected = {3, 1, 2, 4};
+  CHECK_EQ(evictions, expected);
+}
+
 // Invariant: a pinned page is never returned by evict(), even when it sits at
 // the natural eviction end of the list.
 void test_pin_invariant(EvictionPolicy& policy, const char* label) {
@@ -168,6 +199,8 @@ int main() {
   test_pool_construction();
   test_fifo_hand_computed();
   test_lru_hand_computed();
+  test_clock_hand_computed();
+  test_sieve_hand_computed();
 
   {
     FIFOPolicy p(3, 64);
@@ -178,12 +211,28 @@ int main() {
     test_pin_invariant(p, "LRU");
   }
   {
+    ClockPolicy p(3, 64);
+    test_pin_invariant(p, "CLOCK");
+  }
+  {
+    SievePolicy p(3, 64);
+    test_pin_invariant(p, "SIEVE");
+  }
+  {
     FIFOPolicy p(2, 64);
     test_all_pinned_invariant(p, "FIFO");
   }
   {
     LRUPolicy p(2, 64);
     test_all_pinned_invariant(p, "LRU");
+  }
+  {
+    ClockPolicy p(2, 64);
+    test_all_pinned_invariant(p, "CLOCK");
+  }
+  {
+    SievePolicy p(2, 64);
+    test_all_pinned_invariant(p, "SIEVE");
   }
 
   std::printf("%d passed, %d failed\n", g_pass, g_fail);
