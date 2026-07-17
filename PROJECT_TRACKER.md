@@ -22,7 +22,7 @@ numbers and charts.
 | 3 | S3-FIFO (small/main/ghost queues) + tests | Opus, medium | ✅ |
 | 4 | Trace generators + benchmark runner + `plot.py` | Sonnet, medium | ✅ |
 | 5 | Sanity-check results vs. papers + polish + resume bullets | Opus, medium | ✅ |
-| 6 | Teaching phase → `EXPLANATION.md` | Opus, high | ⬜ |
+| 6 | Teaching phase → `EXPLANATION.md` | Opus, high | ✅ |
 
 ## Decisions log
 
@@ -64,6 +64,23 @@ numbers and charts.
   `sparshagra <sparsh51@outlook.com>`; nothing in this repo's history should mention Claude,
   Anthropic, or any AI coding agent. Do not add Co-Authored-By trailers here.
 - Python venv for `plot.py` (Phase 4) lives at `venv/` in the repo root, gitignored.
+
+## Phase 6 — teaching material
+
+[`EXPLANATION.md`](EXPLANATION.md) — progressive build-up from "why doesn't a DB just use the OS
+page cache" through to S3-FIFO, tied throughout to real class/function names in this repo.
+
+All five policy worked examples use **one common access string** (`1,2,3,1,4,1,5,1`, 3-frame
+cache) so they can be compared directly — page 1 is hot, and the scoreboard is FIFO 2 hits ·
+LRU 3 · CLOCK 2 · SIEVE 3 · S3-FIFO 3. Each trace was **verified against the real
+implementations** with a throwaway harness, not just derived on paper, so the document cannot
+teach something the code doesn't do. Nice accident: CLOCK's step 5 lands on the case where every
+reference bit is set, so it degenerates into FIFO and evicts the page it hit one step earlier —
+a better illustration of CLOCK's weakness than anything contrived.
+
+Deliberately **not** included, per the project spec: interview Q&A. To be requested separately.
+
+**Project is complete.** All 7 phases done, 26 commits, all authored solely as `sparshagra`.
 
 ## Phase 5 — verification against the papers, and resume bullets
 
