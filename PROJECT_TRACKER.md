@@ -18,7 +18,7 @@ numbers and charts.
 |---|---|---|---|
 | 0 | Plan & scaffold; interfaces + stub main; **prove the toolchain compiles** | Opus, high | ✅ |
 | 1 | Core buffer pool + FIFO + LRU (index-linked intrusive list) | Sonnet, medium | ✅ |
-| 2 | CLOCK + SIEVE + hand-computed tests | Sonnet, high | ⬜ |
+| 2 | CLOCK + SIEVE + hand-computed tests | Sonnet, high | ✅ |
 | 3 | S3-FIFO (small/main/ghost queues) + tests | Opus, medium | ⬜ |
 | 4 | Trace generators + benchmark runner + `plot.py` | Sonnet, medium | ⬜ |
 | 5 | Sanity-check results vs. papers + polish + resume bullets | Opus, medium | ⬜ |
@@ -38,6 +38,7 @@ numbers and charts.
 | D8 | `gh` CLI not installed at end of Phase 0; GitHub push deferred until user installs it and runs `gh auth login` | Cannot create/push to a GitHub repo without it; global git identity (`sparshagra`) was already correctly configured, so local commits proceeded without waiting. Resolved: `gh` installed, authenticated as `sparshagra`, repo created and pushed at start of Phase 1. |
 | D9 | FIFO/LRU internal lists use `std::unordered_map<page_id_t,int>` from page_id to node index, with a `capacity_`-sized (not `num_pages_`-sized) node array | Matches the master prompt's spec exactly and mirrors how `BufferPool`'s own page table works: node storage is bounded by how many pages can actually be resident, not by the whole page-id space, which is the realistic constraint for a real cache. |
 | D10 | Hand-computed policy tests call `on_access`/`on_insert`/`evict()` directly on a bare policy via a small `simulate()` test helper, not through `BufferPool`/`DiskManager` | Isolates policy logic from disk I/O so the expected-eviction traces are exact and fast; `BufferPool`-level integration is covered separately by `bench/runner.cpp`. |
+| D11 | CLOCK's new inserts start with `ref_bit = true` (one free pass); SIEVE's new inserts start with `visited = false` (no free pass) | Intentional and matches the papers: CLOCK protects freshly-loaded pages like most second-chance implementations (e.g. Postgres); SIEVE's "quick demotion" specifically depends on giving new objects *no* special protection so a one-hit-wonder ages out fast. |
 
 ## Git / GitHub workflow (effective Phase 1 onward)
 
@@ -58,6 +59,46 @@ numbers and charts.
   `sparshagra <sparsh51@outlook.com>`; nothing in this repo's history should mention Claude,
   Anthropic, or any AI coding agent. Do not add Co-Authored-By trailers here.
 - Python venv for `plot.py` (Phase 4) lives at `venv/` in the repo root, gitignored.
+
+## Phase 2 — what exists now
+
+- `include/policies/clock.h` — circular `std::vector<Slot>` of `capacity_` frames
+  (occupied/ref_bit/page_id), `hand_` advances by `(hand_+1) % capacity_` every
+  iteration regardless of outcome. New inserts get `ref_bit = true` (D11).
+- `include/policies/sieve.h` — same list shape as FIFO/LRU (index-linked, head =
+  newest / insert point, tail = oldest), plus a `visited` bit per node and a
+  **persistent** `hand_` (`-1` sentinel means "wrap to `tail_` on next `evict()`",
+  not "uninitialized every call"). New inserts get `visited = false` (D11). A hit
+  only sets `visited = true` — the node is never spliced (no lazy-promotion move).
+- Both `evict()` loops are bounded to `2 * capacity_ + 1` iterations: one full
+  sweep can only clear bits, a second is always enough to find a genuine victim,
+  and the bound still terminates correctly (returns `INVALID_PAGE`) if every
+  resident page is pinned.
+
+**Hand-computed test traces** (both verified by hand *before* running, then
+matched the implementation on the first run — see the derivations in the
+"Add hand-computed CLOCK/SIEVE tests" commit body and below):
+
+- CLOCK, capacity 3, trace `1,2,3,4,2,5` → evictions `[1, 3]`. Pages 1-3 fill
+  the three slots with `ref_bit=true`; requesting 4 forces a full sweep that
+  clears all three bits without evicting, then a second pass evicts page 1
+  (first slot revisited). Page 2's later hit refreshes its bit before the next
+  eviction, so page 3 (never touched again) is evicted instead of it.
+- SIEVE, capacity 3, trace `1,2,3,1,2,4,5,6,5,6,7` → evictions `[3, 1, 2, 4]`.
+  Demonstrates lazy promotion (hits at positions 4-5 set visited bits without
+  moving pages 1/2), the hand persisting *mid-sweep* across separate `evict()`
+  calls (request 8 evicts immediately using the hand position left over from
+  request 7), and quick demotion (page 4, inserted unprotected at request 6,
+  is evicted three requests later, at request 11, having never been
+  re-accessed again).
+- Pin invariants (never evict a pinned page; report `INVALID_PAGE` when
+  everything is pinned) now run against all four policies, not just FIFO/LRU.
+
+**Verified:** `.\build.ps1` compiles with zero warnings, reports
+`31 passed, 0 failed`.
+
+**GitHub:** Phase 2 pushed as 4 commits (CLOCK, SIEVE, tests, this tracker
+update), all authored solely as `sparshagra`.
 
 ## Phase 1 — what exists now
 
