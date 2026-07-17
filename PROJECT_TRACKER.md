@@ -17,7 +17,7 @@ numbers and charts.
 | Phase | Work | Model | Status |
 |---|---|---|---|
 | 0 | Plan & scaffold; interfaces + stub main; **prove the toolchain compiles** | Opus, high | ✅ |
-| 1 | Core buffer pool + FIFO + LRU (index-linked intrusive list) | Sonnet, medium | ⬜ |
+| 1 | Core buffer pool + FIFO + LRU (index-linked intrusive list) | Sonnet, medium | ✅ |
 | 2 | CLOCK + SIEVE + hand-computed tests | Sonnet, high | ⬜ |
 | 3 | S3-FIFO (small/main/ghost queues) + tests | Opus, medium | ⬜ |
 | 4 | Trace generators + benchmark runner + `plot.py` | Sonnet, medium | ⬜ |
@@ -35,7 +35,9 @@ numbers and charts.
 | D5 | `page_id_t = int`, `INVALID_PAGE = -1` | `-1` doubles as the null link for the index-linked intrusive lists, so one sentinel covers both uses. |
 | D6 | Prior abandoned **Python** scaffold moved to `_old_python_attempt/` rather than deleted | It was pure `NotImplementedError` stubs, superseded by the C++ plan. Delete it whenever; it is not referenced by anything. |
 | D7 | `DiskManager::set_io_enabled(false)` makes I/O a counted no-op | Phase 4's ops/sec bench needs disk disabled; a flag on the existing class beats a second fake-disk type. |
-| D8 | `gh` CLI not installed at end of Phase 0; GitHub push deferred until user installs it and runs `gh auth login` | Cannot create/push to a GitHub repo without it; global git identity (`sparshagra`) was already correctly configured, so local commits proceeded without waiting. |
+| D8 | `gh` CLI not installed at end of Phase 0; GitHub push deferred until user installs it and runs `gh auth login` | Cannot create/push to a GitHub repo without it; global git identity (`sparshagra`) was already correctly configured, so local commits proceeded without waiting. Resolved: `gh` installed, authenticated as `sparshagra`, repo created and pushed at start of Phase 1. |
+| D9 | FIFO/LRU internal lists use `std::unordered_map<page_id_t,int>` from page_id to node index, with a `capacity_`-sized (not `num_pages_`-sized) node array | Matches the master prompt's spec exactly and mirrors how `BufferPool`'s own page table works: node storage is bounded by how many pages can actually be resident, not by the whole page-id space, which is the realistic constraint for a real cache. |
+| D10 | Hand-computed policy tests call `on_access`/`on_insert`/`evict()` directly on a bare policy via a small `simulate()` test helper, not through `BufferPool`/`DiskManager` | Isolates policy logic from disk I/O so the expected-eviction traces are exact and fast; `BufferPool`-level integration is covered separately by `bench/runner.cpp`. |
 
 ## Git / GitHub workflow (effective Phase 1 onward)
 
@@ -56,6 +58,28 @@ numbers and charts.
   `sparshagra <sparsh51@outlook.com>`; nothing in this repo's history should mention Claude,
   Anthropic, or any AI coding agent. Do not add Co-Authored-By trailers here.
 - Python venv for `plot.py` (Phase 4) lives at `venv/` in the repo root, gitignored.
+
+## Phase 1 — what exists now
+
+- `include/policies/fifo.h`, `include/policies/lru.h` — both header-only, both an
+  index-linked doubly linked list over a `capacity_`-sized node array + `unordered_map`
+  from page_id to node index (see D9). FIFO's `on_access` is a no-op; LRU's splices the
+  hit node to the newest end.
+- `src/buffer_pool.cpp` — `fetch_page`, `unpin_page`, `flush_all`, `find_victim_frame` are
+  all real. Pin count and the policy's pinned flag are kept in sync on every pin/unpin.
+- `tests/run_tests.cpp` — 23 assertions: original Phase 0 tests + hand-computed FIFO/LRU
+  eviction traces (worked by hand in the commit messages) + pin invariants (pinned page
+  never evicted; evict() returns `INVALID_PAGE` when everything is pinned) run against
+  both policies.
+- `bench/runner.cpp` — no longer uses the Phase 0 `NoopPolicy`; drives a real FIFO pool
+  through 5 fetch/unpin calls on a 4-frame pool and confirms the correct page gets evicted.
+
+**Verified:** `.\build.ps1` compiles both binaries with zero warnings and reports
+`23 passed, 0 failed`; `.\build\runner.exe` confirms page 0 is evicted (FIFO, oldest) to
+make room for page 4, and page 4 is resident afterward.
+
+**GitHub:** repo created at `github.com/sparshagra/sieve-bufferpool` (public), Phase 0
+scaffold + Phase 1 pushed as 9 commits total, all authored solely as `sparshagra`.
 
 ## Phase 0 — what exists now
 
