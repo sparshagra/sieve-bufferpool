@@ -105,7 +105,8 @@ int main() {
   workloads.push_back(make_zipfian_trace(0.8, kKeySpace, kTraceLength, 2));
   workloads.push_back(make_zipfian_trace(1.0, kKeySpace, kTraceLength, 3));
   workloads.push_back(make_sequential_scan_trace(kKeySpace, kTraceLength));
-  workloads.push_back(make_hot_set_shift_trace(kKeySpace, kTraceLength, 4));
+  workloads.push_back(make_zipf_scan_mix_trace(kKeySpace, kTraceLength, 4));
+  workloads.push_back(make_hot_set_shift_trace(kKeySpace, kTraceLength, 5));
 
   std::printf("running benchmarks (-O2, %zu requests/workload, %zu workloads x %zu policies x %zu cache sizes)...\n",
               kTraceLength, workloads.size(), size_t{5}, kCacheSizes.size());

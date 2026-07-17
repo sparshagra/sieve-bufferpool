@@ -20,6 +20,15 @@ Trace make_zipfian_trace(double alpha, size_t key_space, size_t length, unsigned
 // re-requested before the cache has cycled all the way around.
 Trace make_sequential_scan_trace(size_t key_space, size_t length);
 
+// Zipfian hot traffic (alpha=1.0 over the first 10% of the key space)
+// interrupted by periodic sequential scan bursts over the remaining 90%.
+//
+// This is the actual scan-pollution test, and it is the one that separates the
+// policies: the scan pages are one-hit wonders, so a policy that lets them
+// evict the hot set pays for it on every subsequent zipf request. Pure
+// sequential_scan cannot show this -- it has no hot set to pollute.
+Trace make_zipf_scan_mix_trace(size_t key_space, size_t length, unsigned seed);
+
 // The trace is split into phases; each phase has its own "hot" sub-range that
 // most requests land in, and the hot range shifts to a new sub-range each
 // phase. Tests whether a policy can adapt when the working set moves, not

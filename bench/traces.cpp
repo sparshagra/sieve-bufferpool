@@ -37,6 +37,40 @@ Trace make_sequential_scan_trace(size_t key_space, size_t length) {
   return t;
 }
 
+Trace make_zipf_scan_mix_trace(size_t key_space, size_t length, unsigned seed) {
+  constexpr size_t kZipfRun = 800;  // zipf requests between scan bursts
+  constexpr size_t kScanRun = 200;  // distinct cold pages touched per burst
+  constexpr double kAlpha = 1.0;
+
+  size_t hot_space = std::max<size_t>(1, key_space / 10);
+  size_t cold_space = key_space > hot_space ? key_space - hot_space : 1;
+
+  std::vector<double> weights(hot_space);
+  for (size_t i = 0; i < hot_space; ++i) {
+    weights[i] = 1.0 / std::pow(static_cast<double>(i + 1), kAlpha);
+  }
+  std::discrete_distribution<int> dist(weights.begin(), weights.end());
+  std::mt19937 rng(seed);
+
+  Trace t;
+  t.name = "zipf_scan_mix";
+  t.key_space = key_space;
+  t.requests.reserve(length);
+  size_t scan_pos = 0;
+  while (t.requests.size() < length) {
+    for (size_t i = 0; i < kZipfRun && t.requests.size() < length; ++i) {
+      t.requests.push_back(static_cast<page_id_t>(dist(rng)));
+    }
+    // The scan walks continuously across bursts rather than restarting, so it
+    // never accidentally re-warms pages the previous burst just loaded.
+    for (size_t i = 0; i < kScanRun && t.requests.size() < length; ++i) {
+      t.requests.push_back(static_cast<page_id_t>(hot_space + scan_pos % cold_space));
+      ++scan_pos;
+    }
+  }
+  return t;
+}
+
 Trace make_hot_set_shift_trace(size_t key_space, size_t length, unsigned seed) {
   constexpr int kNumPhases = 5;
   constexpr double kHotFraction = 0.15;   // hot set is 15% of the key space
