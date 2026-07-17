@@ -1,8 +1,10 @@
 build/
 results/*.db
-results/*.png
 results/*.csv
 __pycache__/
+
+# results/*.png is deliberately NOT ignored: the README embeds the charts, and
+# they only render on GitHub if they are committed.
 *.exe
 *.o
 
