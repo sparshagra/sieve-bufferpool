@@ -20,7 +20,7 @@ numbers and charts.
 | 1 | Core buffer pool + FIFO + LRU (index-linked intrusive list) | Sonnet, medium | ✅ |
 | 2 | CLOCK + SIEVE + hand-computed tests | Sonnet, high | ✅ |
 | 3 | S3-FIFO (small/main/ghost queues) + tests | Opus, medium | ✅ |
-| 4 | Trace generators + benchmark runner + `plot.py` | Sonnet, medium | ⬜ |
+| 4 | Trace generators + benchmark runner + `plot.py` | Sonnet, medium | ✅ |
 | 5 | Sanity-check results vs. papers + polish + resume bullets | Opus, medium | ⬜ |
 | 6 | Teaching phase → `EXPLANATION.md` | Opus, high | ⬜ |
 
@@ -42,6 +42,8 @@ numbers and charts.
 | D12 | S3-FIFO sizes: `small = max(1, capacity/10)`, `main = capacity - small`, `ghost = max(1, main)`. Small and main share one `capacity_`-sized node array | The 10/90 split is the paper's. The `max(1, ...)` floor keeps small non-empty at the tiny cache sizes the unit tests use (capacity 3 ⇒ small=1, main=2). One shared node array is safe because small + main together are exactly the resident set, bounded by capacity. |
 | **D13** | **S3-FIFO promotes small→main at `freq >= 1` (`kPromoteThreshold = 1`), not `freq > 1`** | **The master prompt specifies "objects accessed ≥1 time move to main", so that is what is implemented. Note the paper's reference implementation (libCacheSim `S3FIFO.c`) uses `freq > 1` — i.e. it requires *two* accesses. This is the single most likely knob to explain any Phase 5 result that contradicts the paper; it is a named constant precisely so it can be flipped and re-benchmarked in one edit.** |
 | D14 | Pages promoted small→main have `freq` reset to 0 | Matches libCacheSim. The promoted page's protection comes from entering at main's *head* (it must survive a full main cycle before it is even considered), not from a carried-over counter — otherwise a page could bank up to 3 extra reinsertion rounds on top of the promotion. |
+| D15 | `run_policy<PolicyT>(...)` is a template instantiated 5 times (once per policy type) rather than a runtime policy factory | Keeps the "no `new`/no smart pointers" rule trivial to satisfy: the concrete policy is a stack local, passed to `BufferPool` by pointer, and virtual dispatch still happens normally through the existing `EvictionPolicy*` interface. No factory/registry abstraction needed for 5 fixed, known-at-compile-time types. |
+| D16 | Benchmark sweep uses `key_space=1000`, `20000` requests/workload, cache sizes `{20,50,100,200,400}` | Chosen for iteration speed (~6-7s for the full 125-combination sweep with real disk I/O) rather than statistical rigor. Revisit in Phase 5 if any workload's numbers look noisy rather than a clean curve. |
 
 ## Git / GitHub workflow (effective Phase 1 onward)
 
@@ -62,6 +64,36 @@ numbers and charts.
   `sparshagra <sparsh51@outlook.com>`; nothing in this repo's history should mention Claude,
   Anthropic, or any AI coding agent. Do not add Co-Authored-By trailers here.
 - Python venv for `plot.py` (Phase 4) lives at `venv/` in the repo root, gitignored.
+
+## Phase 4 — what exists now
+
+- `bench/traces.h/.cpp` — `make_zipfian_trace` (via `std::discrete_distribution` over
+  precomputed `1/(i+1)^alpha` weights), `make_sequential_scan_trace`,
+  `make_hot_set_shift_trace` (5 phases, hot range = 15% of key space, 90% of
+  requests land in it, shifts to a new sub-range each phase).
+- `bench/runner.cpp` — sweeps 5 workloads x 5 policies x 5 cache sizes
+  (`{20,50,100,200,400}` frames, `key_space=1000`, `20000` requests/workload = 125
+  combinations). Policy dispatch is a **template function instantiated once per
+  policy type**, not a runtime factory — avoids heap allocation entirely (D15).
+  Each combination is measured twice: `measure_miss_ratio` (real disk I/O) and
+  `measure_ops_per_sec` (I/O disabled, `steady_clock`, isolates policy overhead).
+- `plot.py` — stdlib `csv` + matplotlib only (no pandas). One PNG per workload
+  (`results/<workload>_miss_ratio.png`, all 5 policies overlaid) + `results/summary.md`
+  (one miss-ratio pivot table per workload + an aggregate ops/sec table), also
+  printed to console.
+- `venv/` now has matplotlib installed.
+
+**Verified:** `.\build.ps1` compiles with zero warnings, `36 passed, 0 failed`.
+`.\build\runner.exe` runs in ~6-7s and writes `results/results.csv` (125 rows).
+`.\venv\Scripts\python.exe plot.py` produces 5 PNGs and `results/summary.md`.
+
+**First look at the numbers** (Phase 5 does the real analysis, this is just a sanity
+check that nothing is obviously broken): on every Zipfian workload SIEVE and S3-FIFO
+have a clearly lower miss ratio than LRU at every cache size; `sequential_scan` is
+100% miss for all five policies at every cache size (expected — scan pollution has
+nowhere to hide when `key_space` far exceeds every tested cache size). `hot_set_shift`
+is more mixed (SIEVE is *worse* than LRU at cache=200/400) — flagged for Phase 5 to
+look into, not yet explained.
 
 ## Phase 3 — what exists now
 
