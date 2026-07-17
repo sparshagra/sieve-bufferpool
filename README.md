@@ -21,9 +21,9 @@ Standard library only. No Boost, no threads, no networking, no `new`/`delete`, n
 all frames and policy nodes are preallocated in `std::vector`s and linked by **integer index**
 (`int prev, next;` with `-1` as null).
 
-> **Status: Phase 0 of 6.** Interfaces, disk manager, and the build are done and compiling; the
-> five policies land in Phases 1–3 and the benchmarks in Phase 4. See
-> [PROJECT_TRACKER.md](PROJECT_TRACKER.md).
+> **Status: Phase 4 of 6.** All five policies are implemented and tested; benchmarks run
+> end to end (CSV -> PNGs -> summary table). Phase 5 sanity-checks the results against
+> the papers' claims. See [PROJECT_TRACKER.md](PROJECT_TRACKER.md).
 
 ## Build and run (3 commands)
 
@@ -31,10 +31,13 @@ Requires **g++ (MinGW-w64)** on PATH — this repo is developed with MSYS2 UCRT6
 `C:\msys64\ucrt64\bin`. **CMake is not required** (and is not installed here).
 
 ```powershell
-.\build.ps1          # 1. compile both binaries with -O2, then run the tests
-.\build\runner.exe   # 2. run the benchmarks  -> results\results.csv
-python plot.py       # 3. CSV -> PNGs + results\summary.md   (Phase 4; needs matplotlib)
+.\build.ps1                    # 1. compile both binaries with -O2, then run the tests
+.\build\runner.exe             # 2. run the benchmarks  -> results\results.csv
+.\venv\Scripts\python plot.py  # 3. CSV -> PNGs + results\summary.md
 ```
+
+Step 3 uses the venv at `venv/` (create once with `python -m venv venv`, then
+`.\venv\Scripts\python.exe -m pip install matplotlib`).
 
 `build.ps1` is just a wrapper around two g++ calls. The raw fallback, if you prefer:
 
@@ -63,15 +66,15 @@ include/
                       + pin tracking shared by all policies
   disk_manager.h      simulated disk: 4 KB pages via fstream, counts every read/write
   buffer_pool.h       frames, page table, pin counts, hit/miss stats
-  policies/           fifo.h lru.h clock.h sieve.h s3fifo.h   (header-only, Phases 1-3)
+  policies/           fifo.h lru.h clock.h sieve.h s3fifo.h   (header-only)
 src/
   disk_manager.cpp  buffer_pool.cpp
 bench/
-  traces.h/.cpp       Zipfian / sequential-scan / hot-set-shift generators   (Phase 4)
+  traces.h/.cpp       Zipfian / sequential-scan / hot-set-shift generators
   runner.cpp          sweeps workloads x policies x cache sizes -> results.csv
 tests/
   run_tests.cpp       hand-computed expected evictions per policy + invariants
-plot.py               the only Python: CSV -> miss-ratio-vs-cache-size PNGs   (Phase 4)
+plot.py               the only Python: CSV -> miss-ratio-vs-cache-size PNGs + summary.md
 results/              results.csv, PNGs, summary.md, and the *.db disk files
 ```
 
