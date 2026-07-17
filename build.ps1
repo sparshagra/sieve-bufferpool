@@ -7,7 +7,7 @@ New-Item -ItemType Directory -Force -Path build, results | Out-Null
 $flags = @("-O2", "-std=c++17", "-Wall", "-Wextra", "-Iinclude")
 
 Write-Host "building runner..." -ForegroundColor Cyan
-g++ @flags (Get-Item src\*.cpp, src\policies\*.cpp -ErrorAction SilentlyContinue).FullName bench\runner.cpp -o build\runner.exe
+g++ @flags (Get-Item src\*.cpp, src\policies\*.cpp -ErrorAction SilentlyContinue).FullName bench\traces.cpp bench\runner.cpp -o build\runner.exe
 if ($LASTEXITCODE -ne 0) { throw "runner build failed" }
 
 Write-Host "building tests..." -ForegroundColor Cyan
